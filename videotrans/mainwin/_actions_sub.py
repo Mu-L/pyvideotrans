@@ -80,7 +80,7 @@ class WinActionSub:
         self.main.proxy.hide()
 
         # 配音角色
-        self.main.tts_type.setCurrentIndex(tts.EDGE_TTS)
+        self.main.tts_type.setCurrentIndex(0)
         self.main.tts_text.hide()
         self.main.tts_type.hide()
         self.main.label_4.show()
@@ -96,6 +96,7 @@ class WinActionSub:
         self.main.split_type.setCurrentIndex(0)
         self.main.model_name.setCurrentIndex(0)
         self.main.reglabel.hide()
+        self.main.recogn_type.setCurrentIndex(0)
         self.main.recogn_type.hide()
         self.main.model_name_help.hide()
         self.main.model_name.hide()
@@ -431,7 +432,7 @@ class WinActionSub:
     def set_mode(self):
         subtitle_type=self.main.subtitle_type.currentIndex()
         voice_role=self.main.voice_role.currentText()
-        if self.main.app_mode == 'tiqu' or (self.main.app_mode.startswith('biaozhun') and subtitle_type < 1 and voice_role == 'No'):
+        if self.main.app_mode == 'tiqu' or (self.main.app_mode.startswith('biaozhun') and subtitle_type < 1 and voice_role in ('No',''," ")):
             self.main.app_mode = 'tiqu'
             # 提取字幕模式，必须有视频、有原始语言，语音模型
             self.cfg['is_separate'] = False
@@ -488,13 +489,22 @@ class WinActionSub:
     # 0=整体识别模型
     # 1=均等分割模式
     def check_split_type(self, index):
-        if index == 0:
-            self.cfg['split_type'] = 'all'
+        index = self.main.split_type.currentIndex()
+        self.cfg['split_type'] = ['all','avg'][index]
+        recogn_type = self.main.recogn_type.currentIndex()
+        # 如果是均等分割，则阈值相关隐藏
+        if recogn_type > 0:
+            tools.hide_show_element(self.main.hfaster_layout, False)
+            tools.hide_show_element(self.main.equal_split_layout, False)
+        elif index == 1:
+            tools.hide_show_element(self.main.equal_split_layout, True)
+            tools.hide_show_element(self.main.hfaster_layout, False)
         else:
-            self.cfg['split_type'] = 'avg'
+            tools.hide_show_element(self.main.equal_split_layout, False)
 
     # 试听配音
     def listen_voice_fun(self):
+        import tempfile
         lang = translator.get_code(show_text=self.main.target_language.currentText())
         if not lang:
             return QMessageBox.critical(self.main, config.transobj['anerror'],
@@ -503,11 +513,7 @@ class WinActionSub:
         role = self.main.voice_role.currentText()
         if not role or role == 'No':
             return QMessageBox.critical(self.main, config.transobj['anerror'], config.transobj['mustberole'])
-        voice_dir = os.environ.get('APPDATA') or os.environ.get('appdata')
-        if not voice_dir or not Path(voice_dir).exists():
-            voice_dir = config.TEMP_DIR + "/voice_tmp"
-        else:
-            voice_dir = Path(voice_dir + "/pyvideotrans").as_posix()
+        voice_dir = tempfile.gettempdir()+'/pyvideotrans'
         if not Path(voice_dir).exists():
             Path(voice_dir).mkdir(parents=True, exist_ok=True)
         lujing_role = role.replace('/', '-')
@@ -522,7 +528,7 @@ class WinActionSub:
         pitch = int(self.main.pitch_rate.value())
         pitch = f'+{pitch}Hz' if pitch >= 0 else f'{volume}Hz'
 
-        voice_file = f"{voice_dir}/{self.cfg['tts_type']}-{lang}-{lujing_role}-{volume}-{pitch}.mp3"
+        voice_file = f"{voice_dir}/{self.main.tts_type.currentIndex()}-{lang}-{lujing_role}-{volume}-{pitch}.mp3"
 
         obj = {
             "text": text,

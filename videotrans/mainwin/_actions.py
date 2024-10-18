@@ -12,6 +12,8 @@ from PySide6.QtWidgets import QMessageBox, QFileDialog
 
 from videotrans import translator, recognition,tts
 from videotrans.component.progressbar import ClickableProgressBar
+from videotrans.component.set_subtitles_length import SubtitleSettingsDialog
+from videotrans.component.set_threads import SetThreadTransDubb
 from videotrans.configure import config
 from videotrans.mainwin._actions_sub import WinActionSub
 from videotrans.task._mult_video import MultVideo
@@ -28,7 +30,7 @@ class WinAction(WinActionSub):
         # 更新按钮
         self.update_btn = None
         # 单个执行时，当前字幕所处阶段：识别后编辑或翻译后编辑
-        self.edit_subtitle_type = ''
+        self.edit_subtitle_type = 'edit_subtitle_source'
         # 进度按钮
         self.processbtns = {}
         # 单个任务时，修改字幕后需要保存到的位置，原始语言字幕或者目标语音字幕
@@ -47,20 +49,7 @@ class WinAction(WinActionSub):
         # 存放需要处理的视频dict信息，包括uuid
         self.obj_list = []
         self.main.source_mp4.setText(config.transobj["No select videos"])
-    # 配音速度改变时
-    def voice_rate_changed(self, text):
-        pass
-        # config.params['voice_rate'] = f'+{text}%' if text >= 0 else f'{text}%'
 
-    # voice_autorate  变化
-    def autorate_changed(self, state, name):
-        pass
-        # if name == 'voice':
-        #     config.params['voice_autorate'] = state
-        # elif name == 'video':
-        #     config.params['video_autorate'] = state
-        # elif name == 'append_video':
-        #     config.params['append_video'] = state
 
     # 删除进度按钮
     def delete_process(self):
@@ -97,12 +86,13 @@ class WinAction(WinActionSub):
 
     # 将倒计时设为立即超时
     def set_djs_timeout(self):        
+        self.main.timeout_tips.setText('')
         self.main.stop_djs.hide()
         self.main.continue_compos.hide()
-        self.main.timeout_tips.setText('')
         self.main.continue_compos.setText('')
         self.main.continue_compos.setDisabled(True)
         self.main.subtitle_area.setReadOnly(True)
+        self.main.target_subtitle_area.setReadOnly(True)
         self.update_subtitle()
         config.task_countdown = -1
 
@@ -149,6 +139,16 @@ class WinAction(WinActionSub):
         is_allow_lang = recognition.is_allow_lang(langcode=lang, recogn_type=recogn_type)
         if is_allow_lang is not True:
             QMessageBox.critical(self.main, config.transobj['anerror'], is_allow_lang)
+        if recogn_type>0:
+            tools.hide_show_element(self.main.hfaster_layout, False)
+            tools.hide_show_element(self.main.equal_split_layout, False)
+        elif self.main.split_type.currentIndex()==1:
+            tools.hide_show_element(self.main.equal_split_layout, True)
+
+    def click_reglabel(self):
+        if self.main.recogn_type.currentIndex()==0 and self.main.split_type.currentIndex()==0:
+            # 判断 self.main.threshold 这个元素是否可见 is_visible
+            self.hide_show_element(self.main.hfaster_layout, not self.main.threshold.isVisible())
 
     # 是否属于 配音角色 随所选目标语言变化的配音渠道 是 edgeTTS AzureTTS 或 302.ai同时 ai302tts_model=azure
     def change_by_lang(self, type):
@@ -310,7 +310,7 @@ class WinAction(WinActionSub):
         if tts.is_input_api(tts_type=self.main.tts_type.currentIndex()) is not True:
             return False
         # 如果没有选择目标语言，但是选择了配音角色，无法配音
-        if self.main.target_language.currentText() == '-' and self.main.voice_role.currentText() != 'No':
+        if self.main.target_language.currentText() == '-' and self.main.voice_role.currentText() not in ['No','',' ']:
             QMessageBox.critical(self.main, config.transobj['anerror'], config.transobj['wufapeiyin'])
             return False
         return True
@@ -347,7 +347,8 @@ class WinAction(WinActionSub):
     # 检测开始状态并启动
     def check_start(self):
         self.cfg={}
-        self.edit_subtitle_type = ''
+        self.edit_subtitle_type = 'edit_subtitle_source'
+
         if config.current_status == 'ing':
             # 已在执行中，则停止
             question = tools.show_popup(config.transobj['exit'], config.transobj['confirmstop'])
@@ -459,6 +460,8 @@ class WinAction(WinActionSub):
         if self.main.recogn_type.currentIndex()>1 and self.main.source_language.currentIndex()==self.main.source_language.count() - 1:
             QMessageBox.critical(self.main, config.transobj['anerror'], '仅faster-whisper和open-whisper模式下可使用检测语言' if config.defaulelang=='zh' else 'Detection language available only in fast-whisper and open-whisper modes.')
             return
+        if self.cfg['target_language'] =='-' and self.cfg['subtitle_type']>0:
+            return QMessageBox.critical(self.main, config.transobj['anerror'], '必须选择目标语言才可嵌入字幕' if config.defaulelang=='zh' else 'Target language must be selected to embed subtitles')
         # 核对是否存在名字相同后缀不同的文件，以及若存在音频则强制为tiqu模式
         if self.check_name() is not True:
             self.main.startbtn.setDisabled(False)
@@ -474,13 +477,55 @@ class WinAction(WinActionSub):
         self.delete_process()
         # 设为开始
         self.update_status('ing')
+
         config.settings = config.parse_init()
-        
+        if self.main.recogn_type.currentIndex()==recognition.FASTER_WHISPER:
+            if self.main.split_type.currentIndex()==1:
+                try:
+                    config.settings['interval_split']=int(self.main.equal_split_time.text().strip())
+                except:
+                    config.settings['interval_split']=10
+
+            config.settings["threshold"]=min(
+                0.9,
+                max(float(self.main.threshold.text().strip()),0.1)
+            )
+            config.settings["min_speech_duration_ms"]=int(self.main.min_speech_duration_ms.text())
+            config.settings["min_silence_duration_ms"]=int(self.main.min_silence_duration_ms.text())
+            config.settings["speech_pad_ms"]=int(self.main.speech_pad_ms.text())
+            config.settings["max_speech_duration_s"]=int(self.main.max_speech_duration_s.text())
+            with  open(config.ROOT_DIR + "/videotrans/cfg.json", 'w', encoding='utf-8') as f:
+                f.write(json.dumps(config.settings, ensure_ascii=False))
         self._disabled_button(True)
         self.main.startbtn.setDisabled(False)
         QTimer.singleShot(50, self.create_btns)
 
+
+    def click_subtitle(self):
+        dialog = SubtitleSettingsDialog(self.main,config.settings.get('cjk_len',24),config.settings.get('other_len',66))
+        if dialog.exec():  # OK 按钮被点击时 exec 返回 True
+            cjk_value, other_value = dialog.get_values()
+            config.settings['cjk_len']=cjk_value
+            config.settings['other_len']=other_value
+            with  open(config.ROOT_DIR + "/videotrans/cfg.json", 'w', encoding='utf-8') as f:
+                f.write(json.dumps(config.settings, ensure_ascii=False))
+    def click_translate_type(self):
+        dialog = SetThreadTransDubb(name='trans_thread',nums=config.settings.get('trans_thread',5))
+        if dialog.exec():  # OK 按钮被点击时 exec 返回 True
+            num = dialog.get_values()
+            config.settings['trans_thread']=num
+            with  open(config.ROOT_DIR + "/videotrans/cfg.json", 'w', encoding='utf-8') as f:
+                f.write(json.dumps(config.settings, ensure_ascii=False))
+    def click_tts_type(self):
+        dialog = SetThreadTransDubb(name='dubbing_thread',nums=config.settings.get('dubbing_thread',5))
+        if dialog.exec():  # OK 按钮被点击时 exec 返回 True
+            num = dialog.get_values()
+            config.settings['dubbing_thread']=num
+            with  open(config.ROOT_DIR + "/videotrans/cfg.json", 'w', encoding='utf-8') as f:
+                f.write(json.dumps(config.settings, ensure_ascii=False))
+
     def create_btns(self):
+
         target_dir = Path(self.main.target_dir if self.main.target_dir else Path(
             self.queue_mp4[0]).parent.as_posix() + "/_video_out").resolve().as_posix()
         self.cfg["target_dir"]=target_dir
@@ -513,15 +558,22 @@ class WinAction(WinActionSub):
             )
             task.uito.connect(self.update_data)
             task.start()
-            return
+            if self.cfg['target_language'] !='-' and self.cfg['target_language'] != self.cfg['source_language']:
+                w=self.main.size().width()+150
+                h=self.main.size().height()
+                self.main.resize(w,h)
 
+                self.main.target_subtitle_area.setMinimumWidth(200)
+                self.main.target_subtitle_area.setVisible(True)
+            return
+        # 多个字幕
+        self.main.target_subtitle_area.clear()
+        self.main.target_subtitle_area.setVisible(False)
         self.is_batch=True
         for it in self.obj_list:
             self.add_process_btn(target_dir=Path(it['target_dir']).as_posix(),name=it['name'], uuid=it['uuid'])
 
         MultVideo(parent=self.main,cfg=self.cfg,obj_list=self.obj_list).start()
-
-
 
     # 启动时禁用相关模式按钮，停止时重新启用
     def _disabled_button(self, disabled=True):
@@ -594,8 +646,7 @@ class WinAction(WinActionSub):
             self.main.startbtn.setText(config.transobj["starting..."])
             return
         # stop 停止，end=结束
-        self.main.subtitle_area.setReadOnly(False)
-        self.main.subtitle_area.clear()
+
         self.main.startbtn.setText(config.transobj[type])
         self.main.export_sub.setDisabled(False)
         self.main.set_line_role.setDisabled(False)
@@ -606,6 +657,9 @@ class WinAction(WinActionSub):
         # 启用相关模式
         self._disabled_button(False)
         if type == 'end':
+            self.main.subtitle_area.clear()
+            self.main.target_subtitle_area.clear()
+            self.main.target_subtitle_area.setVisible(False)
             for prb in self.processbtns.values():
                 prb.setEnd()
             # 成功完成
@@ -654,46 +708,66 @@ class WinAction(WinActionSub):
                 print(f'#########{e}')
         # 一行一行插入字幕到字幕编辑区
         elif d['type'] == "subtitle" and config.current_status=='ing' and (self.is_batch or config.task_countdown<=0):
-            self.main.subtitle_area.moveCursor(QTextCursor.End)
-            self.main.subtitle_area.insertPlainText(d['text'])
-        elif d['type'] == 'set_source_sub':
-            # 单个任务时，设置 self.wait_subtitle 为原始语言文件，以便界面中修改字幕后保存
-            self.wait_subtitle = d['text']
-        elif d['type'] == 'set_target_sub':
-            # 单个任务时，设置 self.wait_subtitle 为原始语言文件，以便界面中修改字幕后保存
-            self.wait_subtitle = d['text']
+            if self.is_batch or ( not self.is_batch and self.edit_subtitle_type=='edit_subtitle_source'):
+                self.main.subtitle_area.moveCursor(QTextCursor.End)
+                self.main.subtitle_area.insertPlainText(d['text'])
+                #print(f'插入1 {self.edit_subtitle_type=} {d["text"]=}')
+            elif not self.is_batch and self.edit_subtitle_type=='edit_subtitle_target':
+                self.main.target_subtitle_area.moveCursor(QTextCursor.End)
+                self.main.target_subtitle_area.insertPlainText(d['text'])
+                #print(f'插入2 {self.edit_subtitle_type=} {d["text"]=}')
+
         elif d['type'] == 'edit_subtitle_source' or d['type'] == 'edit_subtitle_target':
-            # 显示出合成按钮,等待编辑字幕,允许修改字幕
-            self.main.subtitle_area.setReadOnly(False)
-            self.main.subtitle_area.setFocus()
-            self.main.continue_compos.show()
-            self.main.continue_compos.setDisabled(False)
-            self.main.continue_compos.setText(d['text'])
-            self.main.stop_djs.show()
+            self.wait_subtitle = d['text']
             self.edit_subtitle_type = d['type']
+            #print(f'{d=}')
+            # 显示出合成按钮,等待编辑字幕,允许修改字幕
+            if d['type']=='edit_subtitle_source':
+                self.main.subtitle_area.setReadOnly(False)
+                self.main.subtitle_area.setFocus()
+            else:
+                self.main.target_subtitle_area.setReadOnly(False)
+                self.main.target_subtitle_area.setFocus()
+
+
         elif d['type'] == 'disabled_edit':
             # 禁止修改字幕
             self.main.subtitle_area.setReadOnly(True)
+            self.main.target_subtitle_area.setReadOnly(True)
             self.main.export_sub.setDisabled(True)
             self.main.set_line_role.setDisabled(True)
         elif d['type'] == 'allow_edit':
             # 允许修改字幕
-            self.main.subtitle_area.setReadOnly(False)
-            self.main.subtitle_area.setFocus()
+            if self.edit_subtitle_type=='edit_subtitle_source':
+                self.main.subtitle_area.setReadOnly(False)
+                self.main.subtitle_area.setFocus()
+            else:
+                self.main.target_subtitle_area.setReadOnly(False)
+                self.main.target_subtitle_area.setFocus()
             self.main.export_sub.setDisabled(False)
             self.main.set_line_role.setDisabled(False)
         elif d['type'] == 'replace_subtitle':
             # 完全替换字幕区
-            self.main.subtitle_area.clear()
-            self.main.subtitle_area.insertPlainText(d['text'])
+            if self.is_batch or (not self.is_batch and self.edit_subtitle_type=='edit_subtitle_source'):
+                self.main.subtitle_area.clear()
+                self.main.subtitle_area.insertPlainText(d['text'])
+
+            elif not self.is_batch and self.edit_subtitle_type=='edit_subtitle_target':
+                self.main.target_subtitle_area.clear()
+                self.main.target_subtitle_area.insertPlainText(d['text'])
         elif d['type'] == 'timeout_djs':
             self.set_djs_timeout()
         elif d['type'] == 'show_djs':
-            self.main.timeout_tips.setText(d['text'])
-            self.main.stop_djs.show()
             self.main.continue_compos.show()
             self.main.continue_compos.setDisabled(False)
-            self.main.subtitle_area.setReadOnly(False)
+            self.main.continue_compos.setText(
+                '可以点击暂停后修改字幕或继续下一步' if config.defaulelang == 'zh' else 'You can edit subtitle or continue next step')
+            self.main.stop_djs.show()
+            self.main.timeout_tips.setText(d['text'])
+            if self.edit_subtitle_type=='edit_subtitle_source':
+                self.main.subtitle_area.setReadOnly(False)
+            else:
+                self.main.target_subtitle_area.setReadOnly(False)
         elif d['type'] == 'check_soft_update':
             self.update_tips(d['text'])
         elif d['type'] == 'set_clone_role' and self.main.tts_type.currentText() == 'clone-voice':
@@ -714,7 +788,7 @@ class WinAction(WinActionSub):
     def update_subtitle(self):
         self.main.stop_djs.hide()
         self.main.continue_compos.setDisabled(True)
-        txt = self.main.subtitle_area.toPlainText().strip()
+        txt = self.main.subtitle_area.toPlainText().strip() if self.edit_subtitle_type == 'edit_subtitle_source' else self.main.target_subtitle_area.toPlainText().strip()
         if not txt:
             return
 
@@ -724,8 +798,8 @@ class WinAction(WinActionSub):
             with Path(self.wait_subtitle).open('w', encoding='utf-8') as f:
                 f.write(txt)
                 f.flush()
-        if self.edit_subtitle_type == 'edit_subtitle_source':
-            self.main.subtitle_area.clear()
+        # if self.edit_subtitle_type == 'edit_subtitle_source':
+        #     self.main.subtitle_area.clear()
         return True
 
     # 设置每行角色
@@ -769,12 +843,12 @@ class WinAction(WinActionSub):
         if self.cfg['voice_role'].lower() in ['-', 'no']:
             return QtWidgets.QMessageBox.critical(linerolew, config.transobj['anerror'],
                                                   config.transobj['xianxuanjuese'])
-        if not self.main.subtitle_area.toPlainText().strip():
+        if not self.main.target_subtitle_area.toPlainText().strip():
             return QtWidgets.QMessageBox.critical(linerolew, config.transobj['anerror'],
                                                   config.transobj['youzimuyouset'])
 
         #  获取字幕
-        srt_json = tools.get_subtitle_from_srt(self.main.subtitle_area.toPlainText().strip(), is_file=False)
+        srt_json = tools.get_subtitle_from_srt(self.main.target_subtitle_area.toPlainText().strip(), is_file=False)
         for it in srt_json:
             # 创建新水平布局
             h_layout = QtWidgets.QHBoxLayout()
